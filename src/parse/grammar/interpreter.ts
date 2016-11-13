@@ -286,6 +286,7 @@ interface IPathToExamine {
     occurrenceStack:number[]
 }
 
+// TODO: modify is collect from this
 export function nextPossibleTokensAfter(initialDef:IProduction[],
                                         tokenVector:ISimpleTokenOrIToken[],
                                         tokMatcher:TokenMatcher,

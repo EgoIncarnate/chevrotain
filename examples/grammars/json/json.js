@@ -64,9 +64,9 @@ function JsonParserES5(input) {
 
     this.RULE("array", function() {
         $.CONSUME(LSquare);
-        $.OPTION(function() {
+        $.OPTION("items", function() {
             $.SUBRULE($.value);
-            $.MANY(function() {
+            $.MANY("values", function() {
                 $.CONSUME(Comma);
                 $.SUBRULE2($.value);
             });
@@ -75,7 +75,7 @@ function JsonParserES5(input) {
     });
 
     this.RULE("value", function() {
-        $.OR([
+        $.OR("item", [
             {ALT: function() { $.CONSUME(StringLiteral) }},
             {ALT: function() { $.CONSUME(NumberLiteral) }},
             {ALT: function() { $.SUBRULE($.object) }},

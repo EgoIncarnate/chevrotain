@@ -8,6 +8,7 @@ import {gast} from "./grammar/gast_public"
 import {IFirstAfterRepetition} from "./grammar/interpreter"
 import {filter, forEach, values} from "./../utils/utils"
 import {TokenConstructor} from "../scan/lexer_public"
+import {CST_SUBTYPE} from "./cst/cst"
 
 export let CLASS_TO_DEFINITION_ERRORS = new HashTable<IParserDefinitionError[]>()
 
@@ -45,6 +46,12 @@ export let CLASS_TO_PRODUCTION_OVERRIDEN = new HashTable<HashTable<boolean>>()
 
 export function getProductionOverriddenForClass(className:string):HashTable<boolean> {
     return getFromNestedHashTable(className, CLASS_TO_PRODUCTION_OVERRIDEN)
+}
+
+export const CLASS_TO_IS_COLLECTION_PER_RULE = new HashTable<HashTable<HashTable<boolean>>>()
+
+export function getIsCollectionPerRuleForClass(className:string):HashTable<HashTable<CST_SUBTYPE>> {
+    return getFromNestedHashTable(className, CLASS_TO_IS_COLLECTION_PER_RULE)
 }
 
 // TODO reflective test to verify this has not changed, for example (OPTION6 added)

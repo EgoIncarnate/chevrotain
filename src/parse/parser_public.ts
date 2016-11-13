@@ -77,6 +77,8 @@ import {
 } from "../scan/tokens"
 import ISerializedGast = gast.ISerializedGast
 import serializeGrammar = gast.serializeGrammar
+import {CstNode} from "./cst/cst_public"
+import {addTerminalToCst, buildisCollectionForTopRules, initChildrenDictionary} from "./cst/cst"
 
 export enum ParserDefinitionErrorType {
     INVALID_RULE_NAME,
@@ -157,13 +159,21 @@ export interface IParserConfig {
      * During Parser initialization.
      */
     dynamicTokensEnabled?:boolean
+
+    /**
+     * TODO: docs
+     */
+    outputCst?:boolean
 }
 
 const DEFAULT_PARSER_CONFIG:IParserConfig = Object.freeze({
     recoveryEnabled:      false,
     maxLookahead:         5,
     ignoredIssues:        <any>{},
-    dynamicTokensEnabled: false
+    dynamicTokensEnabled: false,
+    // TODO: Document this breaking change, can it be mitigated?
+    // TODO: change to true
+    outputCst:            false
 })
 
 export interface IRuleConfig<T> {
@@ -217,7 +227,6 @@ export interface IFollowKey {
     inRule:string
 }
 
-
 /**
  * OR([
  *  {ALT:XXX },
@@ -247,6 +256,7 @@ export interface IParserState {
     errors:exceptions.IRecognitionException[]
     lexerState:any
     RULE_STACK:string[]
+    CST_STACK:CstNode[]
 }
 
 export type Predicate = () => boolean
@@ -377,6 +387,11 @@ export class Parser {
                 let allFollows = computeAllProdsFollows(clonedProductions.values())
                 cache.setResyncFollowsForClass(className, allFollows)
             }
+
+            if (parserInstance.outputCst) {
+                let isCollectionForRules = buildisCollectionForTopRules(clonedProductions.values())
+                cache.getIsCollectionPerRuleForClass(className).putAll(isCollectionForRules)
+            }
         }
 
         // reThrow the validation errors each time an erroneous parser is instantiated
@@ -396,6 +411,7 @@ export class Parser {
     protected dynamicTokensEnabled:boolean
     protected maxLookahead:number
     protected ignoredIssues:IgnoredParserIssues
+    protected outputCst:boolean
 
     protected _input:ISimpleTokenOrIToken[] = []
     protected inputIdx = -1
@@ -404,10 +420,12 @@ export class Parser {
     protected className:string
     protected RULE_STACK:string[] = []
     protected RULE_OCCURRENCE_STACK:number[] = []
+    protected CST_STACK:CstNode[] = []
     protected tokensMap:{ [fqn:string]:TokenConstructor } = undefined
 
     private firstAfterRepMap
     private classLAFuncs
+    private isCollectionForRule
     private definitionErrors:IParserDefinitionError[]
     private definedRulesNames:string[] = []
 
@@ -451,9 +469,14 @@ export class Parser {
             config.ignoredIssues :
             DEFAULT_PARSER_CONFIG.ignoredIssues
 
+        this.outputCst = has(config, "outputCst") ?
+            config.outputCst :
+            DEFAULT_PARSER_CONFIG.outputCst
+
         this.className = classNameFromInstance(this)
         this.firstAfterRepMap = cache.getFirstAfterRepForClass(this.className)
         this.classLAFuncs = cache.getLookaheadFuncsForClass(this.className)
+        this.isCollectionForRule = cache.getIsCollectionPerRuleForClass(this.className)
 
         if (!cache.CLASS_TO_DEFINITION_ERRORS.containsKey(this.className)) {
             this.definitionErrors = []
@@ -532,6 +555,7 @@ export class Parser {
         this.errors = []
         this._input = []
         this.RULE_STACK = []
+        this.CST_STACK = []
         this.RULE_OCCURRENCE_STACK = []
     }
 
@@ -1189,7 +1213,9 @@ export class Parser {
      */
     protected RULE<T>(name:string,
                       implementation:(...implArgs:any[]) => T,
-                      config:IRuleConfig<T> = DEFAULT_RULE_CONFIG):(idxInCallingRule?:number, ...args:any[]) => T {
+                      // TODO: how to describe the optional return type of CSTNode? T|CstNode is not good because it is not backward
+                      // compatible, T|any is very general...
+                      config:IRuleConfig<T> = DEFAULT_RULE_CONFIG):(idxInCallingRule?:number, ...args:any[]) => T|any {
 
         let ruleErrors = validateRuleName(name, this.className)
         ruleErrors = ruleErrors.concat(validateRuleDoesNotAlreadyExist(name, this.definedRulesNames, this.className))
@@ -1251,11 +1277,28 @@ export class Parser {
     protected ruleInvocationStateUpdate(shortName:string, idxInCallingRule:number):void {
         this.RULE_OCCURRENCE_STACK.push(idxInCallingRule)
         this.RULE_STACK.push(shortName)
+
+        let fullRuleName = this.shortRuleNameToFull.get(shortName)
+        // TODO: conditional no-op
+        this.CST_STACK.push({
+            // TODO: optimize performance - pass fullName to to method instead of accessing via hashMap
+            name:               fullRuleName,
+            // TODO: init isCollection
+            childrenDictionary: initChildrenDictionary(this.isCollectionForRule.get(fullRuleName)),
+        })
+
+        // TODO: this extra stack may be redundant, can access the information each time we need it,
+        // TODO: maybe eveluate this stack only for performance reasons...
+        // this.IS_COLLECTION_STACK.push(this.isCollectionForRule[shortName])
     }
 
     protected ruleFinallyStateUpdate():void {
         this.RULE_STACK.pop()
         this.RULE_OCCURRENCE_STACK.pop()
+
+        // TODO: conditional no-op
+        this.CST_STACK.pop()
+        // this.IS_COLLECTION_STACK.pop()
 
         if ((this.RULE_STACK.length === 0) && !this.isAtEndOfInput()) {
             let firstRedundantTok = this.LA(1)
@@ -1285,7 +1328,8 @@ export class Parser {
                 cacheData:   {
                     orgText:      "",
                     lineToOffset: []
-                }
+                },
+                tokenType:   tokClass.tokenType
             }
         }
         else if (Token.prototype.isPrototypeOf(tokClass.prototype)) {
@@ -1364,11 +1408,21 @@ export class Parser {
     protected consumeInternal(tokClass:TokenConstructor, idx:number):ISimpleTokenOrIToken {
         // TODO: this is an hack to avoid try catch block in V8, should be removed once V8 supports try/catch optimizations.
         // as the IF/ELSE itself has some overhead.
-        if (!this.recoveryEnabled) {
+        if (!this.recoveryEnabled && !this.outputCst) {
             return this.consumeInternalOptimized(tokClass)
         }
         else {
-            return this.consumeInternalWithTryCatch(tokClass, idx)
+            let consumedToken = this.consumeInternalWithTryCatch(tokClass, idx)
+            if (this.outputCst) {
+                // TODO: evaluate performance optimization #1: use shortnames in the first place
+                // TODO: evaluate performance optimization #2: keep last currRuleIsCollection in stackame
+                let shortName = last(this.RULE_STACK)
+                let fullRuleName = this.shortRuleNameToFull.get(shortName)
+                let currRuleIsCollection = this.isCollectionForRule.get(fullRuleName)
+                let currTokTypeName = tokenName(tokClass)
+                addTerminalToCst(last(this.CST_STACK), consumedToken, currRuleIsCollection.get(currTokTypeName))
+            }
+            return consumedToken
         }
     }
 
@@ -1455,7 +1509,8 @@ export class Parser {
         return {
             errors:     savedErrors,
             lexerState: this.inputIdx,
-            RULE_STACK: savedRuleStack
+            RULE_STACK: savedRuleStack,
+            CST_STACK:  this.CST_STACK
         }
     }
 
@@ -1486,6 +1541,7 @@ export class Parser {
         this.shortRuleNameToFull.put(shortName, ruleName)
 
         function invokeRuleNoTry(args:any[]) {
+            // TODO: also return CST here or not use this hack when using CST? -
             let result = impl.apply(this, args)
             this.ruleFinallyStateUpdate()
             return result
@@ -1493,8 +1549,21 @@ export class Parser {
 
         function invokeRuleWithTry(args:any[], isFirstRule:boolean) {
             try {
+                // TODO: extract if/else to custom action.
                 // actual parsing happens here
-                return impl.apply(this, args)
+                if (!isFirstRule) {
+                    return impl.apply(this, args)
+                }
+                // first rule
+                else {
+                    if (this.outputCst) {
+                        impl.apply(this, args)
+                        return last(this.CST_STACK)
+                    }
+                    else {
+                        return impl.apply(this, args)
+                    }
+                }
             } catch (e) {
 
                 // TODO: this is part of a Performance hack for V8 due to lack of support
@@ -2031,6 +2100,7 @@ export class Parser {
         let nextToken = this.LA(1)
         if (this.tokenMatcher(nextToken, expectedTokClass)) {
             this.consumeToken()
+            // TODO: add to CST here
             return nextToken
         }
         else {
@@ -2164,6 +2234,7 @@ export class Parser {
         }
         throw this.SAVE_ERROR(new exceptions.EarlyExitException(userDefinedErrMsg + errSuffix, this.LA(1)))
     }
+
 }
 
 function InRuleRecoveryException(message:string) {

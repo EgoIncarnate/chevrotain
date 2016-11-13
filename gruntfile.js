@@ -6,6 +6,7 @@ var PUBLIC_API_DTS_FILES = [
     'lib/src/scan/tokens_public.d.ts',
     'lib/src/scan/lexer_public.d.ts',
     'lib/src/parse/parser_public.d.ts',
+    'lib/src/parse/cst/cst_public.d.ts',
     'lib/src/parse/exceptions_public.d.ts',
     'lib/src/parse/grammar/path_public.d.ts',
     'lib/src/parse/grammar/gast_public.d.ts',
